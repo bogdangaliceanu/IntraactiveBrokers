@@ -36,11 +36,18 @@ public class BuyTheDipAgent : IBtTradeAgent
             
             try
             {
-                if (await TryBuy(page))
+                var (success, shouldTryAgain) = await TryBuy(page);
+                
+                if (success)
                 {
                     Console.WriteLine();
                     Console.WriteLine($"{nameof(BuyTheDipAgent)} - Success for {instrument.Symbol}");
                     Console.WriteLine();
+                    break;
+                }
+
+                if (!shouldTryAgain)
+                {
                     break;
                 }
             }
@@ -58,69 +65,40 @@ public class BuyTheDipAgent : IBtTradeAgent
         await page.CloseAsync();
     }
 
-    private async Task<bool> TryBuy(IPage page)
+    private async Task<(bool Success, bool ShouldTryAgain)> TryBuy(IPage page)
     {
         var response = await page.GotoAsync($"{BtTrade.BaseUrl}/platform/portfolio/symbol/{instrument.Id}", pageGotoOptions);
         
-        var orderDialogLocator = await OpenOrderDialog();
+        var orderDialogLocator = await OrderDialogOperations.Open(page);
         
         if (await AreParametersOutOfRange())
         {
-            return false;
+            return (false, true);
         }
         
-        await Task.Delay(1000);
-        await FillInQuantity();
-        await Task.Delay(1000);
-        await SetTypeToFillOrKill();
-        await Task.Delay(1000);
-        await PressBuy();
-        await Task.Delay(1000);
-        await PressConfirm();
-        await Task.Delay(1000);
+        await Task.Delay(500);
+        await OrderDialogOperations.FillInQuantity(orderDialogLocator, parameters.Volume);
+        await Task.Delay(500);
+        await OrderDialogOperations.SetTypeToFillOrKill(orderDialogLocator);
+        await Task.Delay(500);
+        await OrderDialogOperations.PressBuy(orderDialogLocator);
+        await Task.Delay(500);
+        await OrderDialogOperations.PressConfirm(orderDialogLocator);
+        await Task.Delay(500);
         
-        var success = !IsError();
-        await Task.Delay(1000);
-        await CloseOrderDialog();
+        var success = !await OrderDialogOperations.IsError(orderDialogLocator);
+        await Task.Delay(500);
+        await OrderDialogOperations.Close(orderDialogLocator);
 
-        return success;
-
-        async Task CloseOrderDialog() => await orderDialogLocator.Locator("div.modal__content__close").ClickAsync();
-
-        bool IsError()
-        {
-            var errorMessage = orderDialogLocator.Locator("div.order-message--error");
-            return errorMessage != null;
-        }
-
-        async Task PressConfirm() => await orderDialogLocator.Locator("div.confirm button#sign").ClickAsync();
-
-        async Task PressBuy() => await orderDialogLocator.Locator("div.actions button.btn--buy").Last.ClickAsync();
-
-        async Task SetTypeToFillOrKill()
-        {
-            await orderDialogLocator.Locator("div.init-order div.order-dropdown").Last.ClickAsync();
-            await Task.Delay(1000);
-            await orderDialogLocator.Locator("div.init-order div.order-dropdown__content > div:last-child").Last.ClickAsync();
-        }
-
-        async Task FillInQuantity() => await orderDialogLocator.Locator("div#order-quantity input").FillAsync(parameters.Volume.ToString());
-
+        return (success, false);
+        
         async Task<bool> AreParametersOutOfRange()
         {
-            var lowestAskRow = orderDialogLocator.Locator("div.deep-market-header-ask > div.deep-market-details__row:nth-child(2)");
-            var lowestAskPrice = double.Parse(await lowestAskRow.Locator("div:nth-child(2)").InnerTextAsync());
-            var lowestAskVolume = int.Parse(await lowestAskRow.Locator("div:nth-child(3)").InnerTextAsync());
+            var (lowestAskPrice, lowestAskVolume) = await OrderDialogOperations.GetLowestAsk(orderDialogLocator);
 
             return lowestAskVolume < parameters.Volume ||
                    lowestAskPrice <= parameters.DangerMinAsk ||
                    lowestAskPrice > parameters.MaxAcceptableAsk;
-        }
-
-        async Task<ILocator> OpenOrderDialog()
-        {
-            await page.Locator("button.btn--primary-buy").ClickAsync();
-            return page.Locator("div.modal__content.new-order");
         }
     }
 
